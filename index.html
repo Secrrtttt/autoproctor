@@ -1,0 +1,825 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Autoproctor</title>
+<style>
+:root{
+  --bg:#e9ecea; --panel:#f8f9f7; --ink:#1b2830; --mute:#5a6a73; --line:#c9d0cd;
+  --ok:#1c7650; --warn:#a85a08; --bad:#ae2a22; --accent:#1d4e6e; --accent-ink:#fff;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --bg:#12171a; --panel:#1b2125; --ink:#e4eae7; --mute:#8f9ea6; --line:#2d373c;
+    --ok:#4cc38a; --warn:#e3a553; --bad:#f0827a; --accent:#7fb6d9; --accent-ink:#0f1a21; }
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:15px/1.5 "Segoe UI",system-ui,-apple-system,Roboto,sans-serif}
+h1,h2,h3{margin:0;font-weight:600;line-height:1.2}
+button{font:inherit;cursor:pointer;border-radius:6px;border:1px solid var(--line);
+  background:var(--panel);color:var(--ink);padding:.55rem .95rem}
+button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+button.danger{border-color:var(--bad);color:var(--bad)}
+button:disabled{opacity:.45;cursor:not-allowed}
+button:focus-visible,input:focus-visible,a:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+input[type=text],input[type=url]{width:100%;font:inherit;padding:.55rem .7rem;border-radius:6px;
+  border:1px solid var(--line);background:var(--bg);color:var(--ink)}
+label{display:block;font-weight:600;margin:0 0 .25rem}
+.hint{color:var(--mute);font-size:.88rem}
+.view{display:none;min-height:100%}
+.view.on{display:block}
+
+/* setup */
+.setup{max-width:1000px;margin:0 auto;padding:2rem 1.25rem 3rem;display:grid;gap:2rem;
+  grid-template-columns:minmax(0,1.1fr) minmax(0,1fr)}
+@media (max-width:820px){.setup{grid-template-columns:1fr}}
+.setup h1{font-size:1.9rem;margin-bottom:.6rem}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:1.25rem}
+.field{margin-bottom:1rem}
+.watch-list{list-style:none;padding:0;margin:1rem 0 0;display:grid;gap:.55rem}
+.watch-list li{display:grid;grid-template-columns:9rem 1fr;gap:.6rem;
+  padding-bottom:.55rem;border-bottom:1px solid var(--line)}
+.watch-list b{font-weight:600}
+.consent{display:flex;gap:.6rem;align-items:flex-start;margin:1rem 0}
+.consent input{margin-top:.3rem}
+#setupError{color:var(--bad);min-height:1.4em;margin:.5rem 0 0}
+
+/* guided steps */
+.steps{list-style:none;margin:0;padding:0;display:grid;gap:.6rem}
+.steps li{display:grid;grid-template-columns:1fr auto;gap:.8rem;align-items:center;
+  border:1px solid var(--line);border-radius:8px;padding:.75rem .9rem;background:var(--bg)}
+.steps li[data-s=now]{border-color:var(--accent);background:var(--panel)}
+.steps li[data-s=todo]{opacity:.55}
+.steps li[data-s=done]{border-color:var(--ok)}
+.steps li[data-s=done] button{background:transparent;color:var(--ok);border-color:var(--ok)}
+.stepbody{display:grid;gap:.15rem}
+.setupprev{width:150px;aspect-ratio:4/3;object-fit:cover;border-radius:6px;background:#000;
+  transform:scaleX(-1);margin-top:.4rem}
+code{background:var(--bg);padding:0 .3rem;border-radius:4px}
+
+/* proctor tools */
+.proctor{max-width:820px;margin:0 auto;padding:2rem 1.25rem 4rem}
+.proctor h1{font-size:1.7rem;margin-bottom:.4rem}
+.pform{margin:1.25rem 0 2rem}
+.pform h2{font-size:1.1rem;margin-bottom:1rem}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+@media (max-width:640px){.row2{grid-template-columns:1fr}}
+.btnrow{display:flex;gap:.6rem}
+.err{color:var(--bad);min-height:1.3em;margin:.6rem 0 0}
+.lh{font-size:1.1rem;margin-bottom:.6rem}
+.exlist{list-style:none;margin:0 0 1.5rem;padding:0;display:grid;gap:.7rem}
+.exlist li{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:.85rem 1rem;
+  display:grid;gap:.5rem}
+.exlist .t{font-weight:600}
+.exlist .u{color:var(--mute);font-size:.85rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.exlist .acts{display:flex;flex-wrap:wrap;gap:.5rem}
+.exlist .acts button{padding:.35rem .7rem;font-size:.9rem}
+.empty{color:var(--mute);padding:1rem;border:1px dashed var(--line);border-radius:8px}
+
+/* exam */
+.exam{display:grid;grid-template-columns:minmax(0,1fr) 320px;height:100vh}
+@media (max-width:900px){.exam{grid-template-columns:1fr;grid-template-rows:1fr auto;height:100vh}}
+.stage{position:relative;background:var(--panel);min-width:0}
+.stage iframe{position:absolute;inset:0;width:100%;height:100%;border:0;background:#fff}
+.side{background:var(--panel);border-left:1px solid var(--line);display:flex;flex-direction:column;
+  min-height:0;padding:1rem;gap:1rem;overflow:auto}
+.preview{position:relative;border-radius:8px;overflow:hidden;background:#000;aspect-ratio:4/3}
+.preview video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
+.rec{position:absolute;top:8px;left:8px;background:rgba(0,0,0,.65);color:#fff;border-radius:99px;
+  padding:2px 10px;font-size:.78rem;display:flex;gap:6px;align-items:center}
+.rec i{width:8px;height:8px;border-radius:50%;background:#ff4d43;display:block}
+.status{display:grid;grid-template-columns:1fr 1fr;gap:.4rem}
+.pill{border:1px solid var(--line);border-radius:6px;padding:.3rem .55rem;font-size:.85rem;
+  display:flex;justify-content:space-between;gap:.4rem}
+.pill[data-s=ok] span:last-child{color:var(--ok)}
+.pill[data-s=bad] span:last-child{color:var(--bad);font-weight:600}
+.pill[data-s=wait] span:last-child{color:var(--warn)}
+.log{flex:1;min-height:120px;overflow:auto;border:1px solid var(--line);border-radius:8px;
+  font-size:.85rem;list-style:none;margin:0;padding:0}
+.log li{padding:.4rem .6rem;border-bottom:1px solid var(--line)}
+.log li[data-sev=warn]{border-left:4px solid var(--warn)}
+.log li[data-sev=high]{border-left:4px solid var(--bad)}
+.log li[data-sev=info]{border-left:4px solid var(--line)}
+.log time{color:var(--mute);margin-right:.4rem;font-variant-numeric:tabular-nums}
+.banner{position:absolute;left:0;right:0;top:0;z-index:5;background:var(--bad);color:#fff;
+  padding:.7rem 1rem;display:none;font-weight:600}
+.banner.on{display:block}
+.noframe{height:100%;display:grid;place-items:center;text-align:center;padding:2rem;color:var(--mute)}
+
+/* review */
+.review{max-width:1100px;margin:0 auto;padding:2rem 1.25rem 4rem}
+.review h1{font-size:1.7rem;margin-bottom:.3rem}
+.summary{display:flex;flex-wrap:wrap;gap:.75rem;margin:1.25rem 0}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:.7rem 1rem;min-width:140px}
+.stat b{display:block;font-size:1.5rem}
+.downloads{display:flex;flex-wrap:wrap;gap:.6rem;margin:1rem 0 2rem}
+.downloads a{display:inline-block;text-decoration:none;color:var(--ink);padding:.5rem .9rem;
+  border:1px solid var(--line);border-radius:6px;background:var(--panel)}
+table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line);font-size:.9rem}
+th,td{text-align:left;padding:.5rem .7rem;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-weight:600;color:var(--mute)}
+td.sev-warn{color:var(--warn)} td.sev-high{color:var(--bad);font-weight:600}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:.8rem;margin-top:1rem}
+.grid figure{margin:0;background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.grid img{width:100%;display:block;aspect-ratio:4/3;object-fit:cover}
+.grid figcaption{padding:.4rem .6rem;font-size:.8rem;color:var(--mute)}
+.review h2{margin:2rem 0 .6rem;font-size:1.2rem}
+@media (prefers-reduced-motion:no-preference){ .rec i{animation:blink 1.4s steps(2,jump-none) infinite} }
+@keyframes blink{50%{opacity:.2}}
+</style>
+</head>
+<body>
+
+<!-- ===== PROCTOR TOOLS ===== -->
+<main id="vProctor" class="view">
+  <div class="proctor">
+    <h1>Proctor tools</h1>
+    <p class="hint">Add each exam once, then copy its student link. Every link opens this same autoproctor screen with that exam inside. Your exam list is saved in this browser only.</p>
+
+    <section class="card pform">
+      <h2 id="pfHead">Add an exam</h2>
+      <div class="field"><label for="pfTitle">Exam title</label>
+        <input id="pfTitle" type="text" placeholder="e.g. Biochemistry Midterm, Section A"></div>
+      <div class="field"><label for="pfUrl">Exam link</label>
+        <input id="pfUrl" type="url" placeholder="https://docs.google.com/forms/d/e/…/viewform?embedded=true"></div>
+      <div class="row2">
+        <div class="field"><label for="pfMin">Time limit in minutes (optional)</label>
+          <input id="pfMin" type="text" inputmode="numeric" placeholder="e.g. 60"></div>
+        <div class="field"><label for="pfUp">Google Drive upload address (optional)</label>
+          <input id="pfUp" type="url" placeholder="https://script.google.com/macros/s/…/exec"></div>
+      </div>
+      <div class="btnrow">
+        <button id="pfSave" class="primary">Save exam</button>
+        <button id="pfCancel" hidden>Cancel edit</button>
+      </div>
+      <p id="pfErr" class="err" role="alert"></p>
+    </section>
+
+    <h2 class="lh">Your exams</h2>
+    <ul id="examList" class="exlist"></ul>
+    <p><a href="#" id="lnkStudent">Back to student check-in</a></p>
+  </div>
+</main>
+
+<!-- ===== SETUP ===== -->
+<main id="vSetup" class="view on">
+  <div class="setup">
+    <section>
+      <h1 id="setupTitle">Proctored exam check-in</h1>
+      <p>Before the exam opens, you will allow your camera, microphone and screen. The session is recorded until you press <b>Finish exam</b>.</p>
+      <ul class="watch-list">
+        <li><b>Camera and voice</b><span>Video and audio are recorded for the whole session.</span></li>
+        <li><b>Screen</b><span>Your entire screen is recorded. Sharing one tab or one window is not accepted.</span></li>
+        <li><b>Random photos</b><span>Camera and screen pictures are taken at random times.</span></li>
+        <li><b>Focus</b><span>Leaving the exam tab, exiting full screen or resizing the window is logged with a screenshot.</span></li>
+        <li><b>Movement</b><span>Large movement, no face, or more than one face in view is logged.</span></li>
+      </ul>
+    </section>
+
+    <section class="card">
+      <div class="field" id="nameField">
+        <label for="name">Full name</label>
+        <input id="name" type="text" autocomplete="name">
+      </div>
+      <div class="field" id="urlField">
+        <label for="examUrl">Exam link</label>
+        <input id="examUrl" type="url" placeholder="https://docs.google.com/forms/d/e/…/viewform?embedded=true">
+        <p class="hint">Leave empty to test. Proctors: open <a href="#proctor">Proctor tools</a> to make a student link for each exam.</p>
+      </div>
+
+      <p class="hint" style="margin:0 0 .8rem">By clicking <b>I agree and allow</b> you consent to the recording described on the left. It is used only to check exam integrity.</p>
+
+      <ol class="steps">
+        <li id="st1" data-s="now">
+          <div class="stepbody">
+            <b>Allow camera and microphone</b>
+            <span class="hint">When the browser asks, click <b>Allow</b>.</span>
+            <video id="setupPrev" class="setupprev" muted playsinline autoplay hidden></video>
+          </div>
+          <button id="btn1" class="primary">I agree and allow</button>
+        </li>
+        <li id="st2" data-s="todo">
+          <div class="stepbody">
+            <b>Share your entire screen</b>
+            <span class="hint">Pick <b>Entire Screen</b>, then click <b>Share</b>.</span>
+          </div>
+          <button id="btn2" class="primary" disabled>Share screen</button>
+        </li>
+        <li id="st3" data-s="todo">
+          <div class="stepbody">
+            <b>Start the exam</b>
+            <span class="hint">The exam opens in full screen.</span>
+          </div>
+          <button id="btn3" class="primary" disabled>Start exam</button>
+        </li>
+      </ol>
+      <p id="setupError" role="alert"></p>
+    </section>
+  </div>
+</main>
+
+<!-- ===== EXAM ===== -->
+<main id="vExam" class="view">
+  <div class="exam">
+    <div class="stage">
+      <div id="banner" class="banner" role="alert"></div>
+      <div id="frameHost" style="position:absolute;inset:0"></div>
+    </div>
+    <aside class="side" aria-label="Proctoring status">
+      <div class="preview">
+        <video id="camPreview" muted playsinline autoplay></video>
+        <div class="rec"><i></i>Recording</div>
+      </div>
+      <div class="status">
+        <div class="pill" id="pCam" data-s="wait"><span>Camera</span><span>–</span></div>
+        <div class="pill" id="pScr" data-s="wait"><span>Screen</span><span>–</span></div>
+        <div class="pill" id="pMic" data-s="wait"><span>Voice</span><span>–</span></div>
+        <div class="pill" id="pFocus" data-s="wait"><span>Focus</span><span>–</span></div>
+        <div class="pill" id="pTime" data-s="ok" hidden><span>Time left</span><span>–</span></div>
+      </div>
+      <ul id="liveLog" class="log" aria-live="polite"></ul>
+      <button id="btnFinish" class="danger">Finish exam</button>
+    </aside>
+  </div>
+</main>
+
+<!-- ===== REVIEW ===== -->
+<main id="vReview" class="view">
+  <div class="review">
+    <h1>Session report</h1>
+    <p id="rvMeta" class="hint"></p>
+    <div id="rvStats" class="summary"></div>
+    <div id="rvDownloads" class="downloads"></div>
+    <h2>Flags and events</h2>
+    <table>
+      <thead><tr><th>Time</th><th>Type</th><th>Detail</th></tr></thead>
+      <tbody id="rvEvents"></tbody>
+    </table>
+    <h2>Photos</h2>
+    <div id="rvSnaps" class="grid"></div>
+  </div>
+</main>
+
+<canvas id="work" width="64" height="48" hidden></canvas>
+
+<script>
+"use strict";
+
+/* ================= CONFIG ================= */
+const CFG = {
+  uploadUrl: "",          // e.g. "https://your-server.example/api/proctor". Empty = keep in browser, download at the end.
+  chunkMs: 60000,         // recorder timeslice; each chunk is saved to Drive as its own file
+  camBps: 300000,         // camera video bits per second (keeps Drive storage small)
+  screenBps: 600000,      // screen video bits per second
+  snapMinSec: 25,         // random photo interval (min)
+  snapMaxSec: 75,         // random photo interval (max)
+  motionSampleMs: 500,
+  motionThreshold: 0.14,  // fraction of pixels that changed (0-1)
+  voiceThreshold: 0.045,  // RMS level that counts as speech
+  voiceHoldMs: 1500,      // speech must last this long to be flagged
+  splitRatio: 0.9,        // window smaller than 90% of screen = possible split screen
+  cooldownMs: 8000,       // minimum gap between repeated flags of the same type
+  requireFullscreen: true
+};
+
+/* ================= STATE ================= */
+const $ = id => document.getElementById(id);
+const S = {
+  id: "ses-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+  name: "", startedAt: 0, endedAt: 0,
+  events: [], snaps: [],
+  camStream: null, scrStream: null, voiceStream: null,
+  rec: {}, chunks: { camera: [], screen: [], voice: [] }, seq: { camera: 0, screen: 0, voice: 0 },
+  timers: [], lastFlag: {}, prevFrame: null, motionHits: 0, speechSince: 0,
+  audioCtx: null, finished: false, hiddenAt: 0
+};
+const camV = $("camPreview");
+const scrV = document.createElement("video");   // hidden, only used to grab screen frames
+scrV.muted = true; scrV.playsInline = true;
+
+/* ================= UTIL ================= */
+const pad = n => String(n).padStart(2, "0");
+const fmtT = ms => { const s = Math.floor(ms / 1000); return pad(Math.floor(s / 3600)) + ":" + pad(Math.floor(s % 3600 / 60)) + ":" + pad(s % 60); };
+const rel = () => Date.now() - S.startedAt;
+const setPill = (id, state, text) => { const p = $(id); p.dataset.s = state; p.lastElementChild.textContent = text; };
+const bestMime = (kinds) => kinds.find(k => window.MediaRecorder && MediaRecorder.isTypeSupported(k)) || "";
+
+function log(type, detail, sev = "info", opts = {}) {
+  const now = Date.now();
+  if (opts.cooldown && now - (S.lastFlag[type] || 0) < CFG.cooldownMs) return false;
+  if (opts.cooldown) S.lastFlag[type] = now;
+  const ev = { t: rel(), at: new Date(now).toISOString(), type, detail, sev };
+  S.events.push(ev);
+  const li = document.createElement("li");
+  li.dataset.sev = sev;
+  li.innerHTML = "<time>" + fmtT(ev.t) + "</time>";
+  li.append(document.createTextNode(detail));
+  const ul = $("liveLog"); ul.prepend(li);
+  while (ul.children.length > 60) ul.lastChild.remove();
+  return true;
+}
+
+function banner(msg) { const b = $("banner"); b.textContent = msg; b.classList.toggle("on", !!msg); }
+
+function frameOf(video, w = 640) {
+  if (!video.videoWidth) return null;
+  const c = document.createElement("canvas");
+  c.width = w; c.height = Math.round(w * video.videoHeight / video.videoWidth);
+  c.getContext("2d").drawImage(video, 0, 0, c.width, c.height);
+  return c.toDataURL("image/jpeg", 0.7);
+}
+
+function snapshot(reason, sources = ["camera", "screen"]) {
+  sources.forEach(src => {
+    const url = frameOf(src === "camera" ? camV : scrV, src === "screen" ? 960 : 640);
+    if (!url) return;
+    const snap = { t: rel(), src, reason, url };
+    S.snaps.push(snap);
+    upload("snapshot", dataUrlToBlob(url), { src, reason, t: snap.t });
+  });
+}
+
+function dataUrlToBlob(u) {
+  const [h, b] = u.split(","); const m = /:(.*?);/.exec(h)[1];
+  const bin = atob(b); const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return new Blob([arr], { type: m });
+}
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const blobToB64 = blob => new Promise((res, rej) => {
+  const r = new FileReader();
+  r.onload = () => res(String(r.result).split(",")[1]);
+  r.onerror = () => rej(r.error);
+  r.readAsDataURL(blob);
+});
+
+// Sends one piece (video chunk, photo or event log) to the Google Drive receiver. Resolves true/false.
+async function sendToDrive(kind, blob, meta) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const body = { sessionId: S.id, student: S.name, exam: EXAM.t || "Exam", kind, meta, mime: blob.type };
+      if (kind === "events") body.text = await blob.text(); else body.data = await blobToB64(blob);
+      // A plain string body is sent as text/plain, which Apps Script accepts without a CORS preflight.
+      const r = await fetch(CFG.uploadUrl, { method: "POST", body: JSON.stringify(body) });
+      const j = await r.json();
+      if (j.ok) return true;
+      throw new Error(j.error || "refused");
+    } catch (e) {
+      if (attempt === 2) { log("upload", "Could not send a " + kind + " file to Drive (" + e.message + ")", "warn", { cooldown: true }); return false; }
+      await sleep(2000 * (attempt + 1));
+    }
+  }
+  return false;
+}
+
+function upload(kind, blob, meta = {}) {
+  if (!CFG.uploadUrl) return Promise.resolve(true);
+  const p = sendToDrive(kind, blob, meta);
+  (S.pending ||= new Set()).add(p);
+  p.finally(() => S.pending.delete(p));
+  return p;
+}
+
+/* ================= START (guided, three clicks) ================= */
+function b64e(o) { return btoa(unescape(encodeURIComponent(JSON.stringify(o)))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); }
+function b64d(t) { t = t.replace(/-/g, "+").replace(/_/g, "/"); while (t.length % 4) t += "="; return JSON.parse(decodeURIComponent(escape(atob(t)))); }
+
+// Google Forms only loads inside another page when the address ends in ?embedded=true
+function normalizeExamUrl(raw) {
+  try {
+    const u = new URL(raw);
+    if (u.hostname === "docs.google.com" && u.pathname.includes("/forms/") && u.pathname.includes("/viewform")) {
+      u.searchParams.delete("usp"); u.searchParams.set("embedded", "true");
+    }
+    return u.toString();
+  } catch (_) { return raw; }
+}
+
+// An exam config comes from the student link: ?c=<encoded>  (or the older ?exam=LINK&title=...)
+const P = new URLSearchParams(location.search);
+let EXAM = {};
+try {
+  if (P.get("c")) EXAM = b64d(P.get("c"));
+  else if (P.get("exam")) EXAM = { u: P.get("exam"), t: P.get("title") || "" };
+} catch (_) { EXAM = {}; }
+if (EXAM.u) { $("examUrl").value = EXAM.u; $("urlField").hidden = true; }
+if (EXAM.t) { $("setupTitle").textContent = EXAM.t; document.title = EXAM.t + " (proctored)"; }
+if (EXAM.up) CFG.uploadUrl = EXAM.up;
+if (P.get("name")) { $("name").value = P.get("name"); $("nameField").hidden = true; }
+
+function setStep(n) {          // n = the active step (1-3)
+  [1, 2, 3].forEach(i => {
+    $("st" + i).dataset.s = i < n ? "done" : i === n ? "now" : "todo";
+    $("btn" + i).disabled = i !== n;
+  });
+  $("btn1").textContent = n > 1 ? "Allowed" : "I agree and allow";
+  $("btn2").textContent = n > 2 ? "Shared" : "Share screen";
+}
+const showErr = m => { $("setupError").textContent = m || ""; };
+
+$("btn1").addEventListener("click", async () => {
+  showErr("");
+  S.name = $("name").value.trim();
+  if (!S.name) { showErr("Enter your full name first."); $("name").focus(); return; }
+  if (!navigator.mediaDevices || !window.MediaRecorder) { showErr("This browser cannot record. Use current Chrome or Edge on a computer."); return; }
+  if (!window.isSecureContext) { showErr("This page must be opened over HTTPS (or localhost) to use the camera."); return; }
+  try {
+    S.camStream = await navigator.mediaDevices.getUserMedia({
+      video: { width: 640, height: 480, facingMode: "user" },
+      audio: { echoCancellation: true, noiseSuppression: false }
+    });
+  } catch (e) {
+    showErr(e.name === "NotAllowedError"
+      ? "Camera or microphone was blocked. Click the camera icon in the address bar, choose Allow, then press the button again."
+      : e.name === "NotFoundError" ? "No camera or microphone was found." : e.message);
+    return;
+  }
+  const pv = $("setupPrev"); pv.srcObject = S.camStream; pv.hidden = false;
+  setStep(2);
+});
+
+$("btn2").addEventListener("click", async () => {
+  showErr("");
+  try {
+    S.scrStream = await navigator.mediaDevices.getDisplayMedia({
+      video: { displaySurface: "monitor", frameRate: { ideal: 6, max: 10 } }, audio: false, selfBrowserSurface: "exclude"
+    });
+    const surface = S.scrStream.getVideoTracks()[0].getSettings().displaySurface;
+    if (surface && surface !== "monitor") {
+      S.scrStream.getTracks().forEach(t => t.stop()); S.scrStream = null;
+      showErr("You shared a " + surface + ". Press Share screen again and choose Entire Screen.");
+      return;
+    }
+  } catch (e) {
+    showErr(e.name === "NotAllowedError"
+      ? "Screen sharing was cancelled. Press Share screen again and choose Entire Screen."
+      : e.message);
+    return;
+  }
+  S.scrStream.getVideoTracks()[0].addEventListener("ended", () => {
+    if (S.startedAt) return;                      // after the exam starts, the recorder handles this
+    S.scrStream = null; setStep(2); showErr("Screen sharing stopped. Share your entire screen again.");
+  });
+  setStep(3);
+});
+
+$("btn3").addEventListener("click", async () => {
+  showErr("");
+  if (!S.scrStream || !S.scrStream.active || !S.camStream || !S.camStream.active) { setStep(S.camStream && S.camStream.active ? 2 : 1); showErr("A permission was lost. Please allow it again."); return; }
+  if (CFG.requireFullscreen && document.documentElement.requestFullscreen) {
+    try { await document.documentElement.requestFullscreen(); } catch (_) { /* logged during the exam */ }
+  }
+  beginSession();
+});
+
+function beginSession() {
+  S.startedAt = Date.now();
+  $("vSetup").classList.remove("on"); $("vExam").classList.add("on");
+  camV.srcObject = S.camStream; scrV.srcObject = S.scrStream;
+  camV.play(); scrV.play();
+
+  // exam content
+  const url = $("examUrl").value.trim();
+  const host = $("frameHost");
+  if (url) {
+    const f = document.createElement("iframe");
+    f.id = "examFrame"; f.src = normalizeExamUrl(url); f.title = "Exam";
+    host.append(f);
+  } else {
+    host.innerHTML = '<div class="noframe"><div><h2>Test mode</h2><p>No exam link was entered. Switch tabs, resize the window, speak or move to see flags appear.</p></div></div>';
+  }
+
+  startRecorders();
+  startWatchers();
+  if (CFG.uploadUrl) S.timers.push(setInterval(() => {
+    if (!S.finished) upload("events", new Blob([JSON.stringify({ id: S.id, student: S.name, events: S.events })], { type: "application/json" }));
+  }, 60000));
+  setPill("pCam", "ok", "On"); setPill("pScr", "ok", "On"); setPill("pMic", "ok", "Quiet"); setPill("pFocus", "ok", "In exam");
+  log("start", "Session started for " + S.name + (EXAM.t ? " · " + EXAM.t : ""), "info");
+  if (EXAM.m > 0) startTimer(EXAM.m);
+  setTimeout(() => snapshot("session start"), 1200);
+  scheduleRandomSnap();
+}
+
+/* ================= RECORDERS ================= */
+function startRecorders() {
+  const vidMime = bestMime(["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"]);
+  const audMime = bestMime(["audio/webm;codecs=opus", "audio/webm"]);
+  S.voiceStream = new MediaStream(S.camStream.getAudioTracks());
+
+  const make = (key, stream, mime, bps = {}) => {
+    const r = new MediaRecorder(stream, { ...(mime ? { mimeType: mime } : {}), ...bps });
+    r.ondataavailable = e => {
+      if (!e.data.size) return;
+      const seq = S.seq[key]++;
+      if (!CFG.uploadUrl) { S.chunks[key].push(e.data); return; }          // no Drive: keep for download
+      upload(key, e.data, { seq }).then(ok => { if (!ok) S.chunks[key].push(e.data); });   // keep only what failed to send
+    };
+    r.start(CFG.chunkMs);
+    S.rec[key] = r;
+  };
+  make("camera", S.camStream, vidMime, { videoBitsPerSecond: CFG.camBps, audioBitsPerSecond: 48000 });     // face video with audio
+  make("screen", S.scrStream, vidMime, { videoBitsPerSecond: CFG.screenBps });     // full-screen recording
+  if (!CFG.uploadUrl) make("voice", S.voiceStream, audMime, { audioBitsPerSecond: 48000 });   // with Drive, the camera file already holds the voice    // audio-only track
+
+  S.scrStream.getVideoTracks()[0].addEventListener("ended", () => {
+    if (S.finished) return;
+    setPill("pScr", "bad", "Stopped");
+    banner("Screen sharing stopped. Share your entire screen again or tell your proctor.");
+    log("screen-stopped", "Screen sharing was stopped", "high");
+    snapshot("screen sharing stopped", ["camera"]);
+  });
+  S.camStream.getTracks().forEach(t => t.addEventListener("ended", () => {
+    if (S.finished) return;
+    setPill("pCam", "bad", "Lost"); log("camera-lost", "Camera or microphone disconnected", "high");
+  }));
+}
+
+/* ================= WATCHERS ================= */
+function startWatchers() {
+  // --- focus / tab switching ---
+  document.addEventListener("visibilitychange", () => {
+    if (S.finished) return;
+    if (document.hidden) {
+      S.hiddenAt = Date.now();
+      setPill("pFocus", "bad", "Left tab");
+      log("tab-hidden", "Exam tab was hidden (switched tab or minimized)", "high", { cooldown: false });
+      snapshot("tab hidden", ["screen", "camera"]);   // screen frame shows what is open on the monitor
+    } else {
+      const secs = Math.round((Date.now() - S.hiddenAt) / 1000);
+      setPill("pFocus", "ok", "In exam");
+      log("tab-visible", "Returned to exam tab after " + secs + " s", "warn");
+    }
+  });
+  window.addEventListener("blur", () => {
+    if (S.finished) return;
+    setTimeout(() => {
+      const a = document.activeElement;
+      if (a && a.id === "examFrame") return;        // focus moved into the exam iframe: fine
+      if (document.hasFocus() || document.hidden) return;
+      setPill("pFocus", "bad", "No focus");
+      if (log("window-blur", "Another window or app took focus", "high", { cooldown: true })) snapshot("window lost focus", ["screen"]);
+    }, 350);
+  });
+  window.addEventListener("focus", () => { if (!document.hidden && !S.finished) setPill("pFocus", "ok", "In exam"); });
+
+  // --- full screen + split screen / resize ---
+  document.addEventListener("fullscreenchange", () => {
+    if (S.finished || !CFG.requireFullscreen) return;
+    if (!document.fullscreenElement) {
+      banner("Full screen was exited. Press F11 or click Return to full screen.");
+      log("fullscreen-exit", "Exited full screen", "high", { cooldown: true });
+      snapshot("full screen exited", ["screen"]);
+      const b = $("banner"); b.style.cursor = "pointer";
+      b.onclick = () => document.documentElement.requestFullscreen().then(() => { banner(""); b.onclick = null; }).catch(() => {});
+    } else { banner(""); }
+  });
+  const checkSplit = () => {
+    if (S.finished) return;
+    const wr = window.innerWidth / screen.width, hr = window.innerHeight / screen.height;
+    if (wr < CFG.splitRatio || hr < CFG.splitRatio) {
+      if (log("split-screen", "Exam window covers only " + Math.round(wr * 100) + "% x " + Math.round(hr * 100) + "% of the screen (possible split screen)", "high", { cooldown: true }))
+        snapshot("possible split screen", ["screen"]);
+    }
+  };
+  window.addEventListener("resize", checkSplit);
+  S.timers.push(setInterval(checkSplit, 2000));
+
+  // --- copy / paste / right click / devtools shortcuts ---
+  ["copy", "paste", "cut", "contextmenu"].forEach(ev =>
+    document.addEventListener(ev, () => log(ev, "Used " + ev, "warn", { cooldown: true })));
+  document.addEventListener("keydown", e => {
+    if (e.key === "PrintScreen" || (e.ctrlKey && e.shiftKey && ["I", "J", "C"].includes(e.key)) || e.key === "F12")
+      log("shortcut", "Pressed " + (e.key === "PrintScreen" ? "Print Screen" : "a developer-tools shortcut"), "warn", { cooldown: true });
+  });
+  window.addEventListener("beforeunload", e => { if (!S.finished) { e.preventDefault(); e.returnValue = ""; } });
+
+  // --- movement + faces ---
+  const cv = $("work"), cx = cv.getContext("2d", { willReadFrequently: true });
+  const faceDet = ("FaceDetector" in window) ? new FaceDetector({ fastMode: true, maxDetectedFaces: 3 }) : null;
+  let noFaceTicks = 0;
+  S.timers.push(setInterval(async () => {
+    if (S.finished || !camV.videoWidth) return;
+    cx.drawImage(camV, 0, 0, 64, 48);
+    const d = cx.getImageData(0, 0, 64, 48).data;
+    const g = new Uint8Array(64 * 48);
+    for (let i = 0, j = 0; i < d.length; i += 4, j++) g[j] = (d[i] * 3 + d[i + 1] * 6 + d[i + 2]) / 10;
+    if (S.prevFrame) {
+      let diff = 0; for (let i = 0; i < g.length; i++) if (Math.abs(g[i] - S.prevFrame[i]) > 28) diff++;
+      const score = diff / g.length;
+      S.motionHits = score > CFG.motionThreshold ? S.motionHits + 1 : 0;
+      if (S.motionHits >= 2 && log("movement", "Large movement in camera view (" + Math.round(score * 100) + "% of frame changed)", "warn", { cooldown: true }))
+        snapshot("movement", ["camera"]);
+    }
+    S.prevFrame = g;
+  }, CFG.motionSampleMs));
+
+  if (faceDet) {
+    S.timers.push(setInterval(async () => {
+      if (S.finished || !camV.videoWidth) return;
+      try {
+        const faces = await faceDet.detect(camV);
+        if (faces.length === 0) {
+          if (++noFaceTicks >= 3 && log("no-face", "No face visible in camera", "high", { cooldown: true })) snapshot("no face", ["camera"]);
+        } else {
+          noFaceTicks = 0;
+          if (faces.length > 1 && log("multi-face", faces.length + " faces visible in camera", "high", { cooldown: true })) snapshot("multiple faces", ["camera"]);
+        }
+      } catch (_) { /* detector failed this tick */ }
+    }, 2000));
+  } else {
+    log("info", "Face detection is not supported in this browser; only movement is checked.", "info");
+  }
+
+  // --- voice ---
+  const AC = window.AudioContext || window.webkitAudioContext;
+  S.audioCtx = new AC();
+  const src = S.audioCtx.createMediaStreamSource(S.voiceStream);
+  const an = S.audioCtx.createAnalyser(); an.fftSize = 1024; src.connect(an);
+  const buf = new Float32Array(an.fftSize);
+  S.timers.push(setInterval(() => {
+    if (S.finished) return;
+    an.getFloatTimeDomainData(buf);
+    let sum = 0; for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+    const rms = Math.sqrt(sum / buf.length);
+    if (rms > CFG.voiceThreshold) {
+      if (!S.speechSince) S.speechSince = Date.now();
+      setPill("pMic", "wait", "Sound");
+      if (Date.now() - S.speechSince > CFG.voiceHoldMs &&
+          log("voice", "Speech or loud sound detected (level " + rms.toFixed(3) + ")", "warn", { cooldown: true }))
+        snapshot("voice detected", ["camera"]);
+    } else { S.speechSince = 0; setPill("pMic", "ok", "Quiet"); }
+  }, 200));
+}
+
+function scheduleRandomSnap() {
+  const ms = (CFG.snapMinSec + Math.random() * (CFG.snapMaxSec - CFG.snapMinSec)) * 1000;
+  S.timers.push(setTimeout(() => {
+    if (S.finished) return;
+    snapshot("random check"); scheduleRandomSnap();
+  }, ms));
+}
+
+/* ================= FINISH ================= */
+function stopStreams() {
+  [S.camStream, S.scrStream, S.voiceStream].forEach(s => s && s.getTracks().forEach(t => t.stop()));
+}
+
+function startTimer(min) {
+  const end = Date.now() + min * 60000;
+  $("pTime").hidden = false;
+  S.timers.push(setInterval(() => {
+    const left = end - Date.now();
+    if (left <= 0) { setPill("pTime", "bad", "0:00"); finishExam(true); return; }
+    setPill("pTime", left < 300000 ? "wait" : "ok", fmtT(left).replace(/^00:/, ""));
+  }, 1000));
+}
+
+$("btnFinish").addEventListener("click", () => finishExam(false));
+
+async function finishExam(auto) {
+  if (S.finished) return;
+  if (!auto && !confirm("Finish the exam and stop recording? This cannot be undone.")) return;
+  S.finished = true; S.endedAt = Date.now();
+  S.timers.forEach(t => { clearInterval(t); clearTimeout(t); });
+  log("end", auto ? "Time limit reached; session ended automatically" : "Session finished by student", "info");
+  // let each recorder flush its final chunk
+  await Promise.all(Object.values(S.rec).map(r => new Promise(res => {
+    if (r.state === "inactive") return res();
+    r.addEventListener("stop", res, { once: true }); r.stop();
+  })));
+  stopStreams();
+  if (S.audioCtx) S.audioCtx.close();
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  upload("events", new Blob([JSON.stringify({ id: S.id, student: S.name, events: S.events }, null, 2)], { type: "application/json" }));
+  if (CFG.uploadUrl) {
+    banner("Sending your recordings. Keep this page open until the report appears.");
+    await Promise.race([Promise.allSettled([...(S.pending || [])]), sleep(180000)]);
+    banner("");
+  }
+  showReview();
+}
+
+/* ================= REVIEW ================= */
+function showReview() {
+  $("vExam").classList.remove("on"); $("vReview").classList.add("on");
+  $("rvMeta").textContent = S.name + " · " + new Date(S.startedAt).toLocaleString() + " · length " + fmtT(S.endedAt - S.startedAt) + " · session " + S.id;
+
+  const count = t => S.events.filter(e => t.includes(e.type)).length;
+  const stats = [
+    ["Flags (high)", S.events.filter(e => e.sev === "high").length],
+    ["Flags (warning)", S.events.filter(e => e.sev === "warn").length],
+    ["Tab or window leaves", count(["tab-hidden", "window-blur"])],
+    ["Split-screen or resize", count(["split-screen", "fullscreen-exit"])],
+    ["Movement or face flags", count(["movement", "no-face", "multi-face"])],
+    ["Photos taken", S.snaps.length]
+  ];
+  $("rvStats").innerHTML = stats.map(([l, n]) => '<div class="stat"><b>' + n + "</b>" + l + "</div>").join("");
+
+  const dl = $("rvDownloads"); dl.innerHTML = "";
+  document.querySelectorAll(".sendnote").forEach(n => n.remove());
+  if (CFG.uploadUrl) {
+    const failed = ["camera", "screen", "voice"].some(k => S.chunks[k].length);
+    const n = document.createElement("p"); n.className = "sendnote";
+    n.textContent = failed ? "Some recordings could not be sent. Download the files below and give them to your proctor."
+                           : "Your recordings were sent to your proctor. You can close this page.";
+    dl.before(n);
+  }
+  const addLink = (label, blob, file) => {
+    const a = document.createElement("a"); a.textContent = label; a.href = URL.createObjectURL(blob); a.download = file; dl.append(a);
+  };
+  const safe = S.name.replace(/\W+/g, "_") || "student";
+  if (S.chunks.camera.length) addLink("Camera video (.webm)", new Blob(S.chunks.camera, { type: "video/webm" }), safe + "_camera.webm");
+  if (S.chunks.screen.length) addLink("Screen recording (.webm)", new Blob(S.chunks.screen, { type: "video/webm" }), safe + "_screen.webm");
+  if (S.chunks.voice.length) addLink("Voice recording (.webm)", new Blob(S.chunks.voice, { type: "audio/webm" }), safe + "_voice.webm");
+  addLink("Event log (.json)", new Blob([JSON.stringify({ id: S.id, student: S.name, events: S.events }, null, 2)], { type: "application/json" }), safe + "_events.json");
+
+  const tb = $("rvEvents"); tb.innerHTML = "";
+  S.events.forEach(e => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = "<td>" + fmtT(e.t) + "</td><td>" + e.type + '</td><td class="sev-' + e.sev + '"></td>';
+    tr.lastChild.textContent = e.detail; tb.append(tr);
+  });
+
+  const g = $("rvSnaps"); g.innerHTML = "";
+  S.snaps.forEach(s => {
+    const f = document.createElement("figure");
+    const im = document.createElement("img"); im.src = s.url; im.alt = s.src + " photo, " + s.reason;
+    const c = document.createElement("figcaption"); c.textContent = fmtT(s.t) + " · " + s.src + " · " + s.reason;
+    f.append(im, c); g.append(f);
+  });
+}
+
+/* ================= PROCTOR TOOLS ================= */
+const LS_KEY = "autoproctor.exams.v1";
+let exams = [], editId = null;
+try { exams = JSON.parse(localStorage.getItem(LS_KEY) || "[]"); } catch (_) { exams = []; }
+const saveExams = () => { try { localStorage.setItem(LS_KEY, JSON.stringify(exams)); } catch (_) { $("pfErr").textContent = "This browser would not save the list. Copy your links before closing."; } };
+const baseUrl = () => location.href.split(/[?#]/)[0];
+const studentLink = e => baseUrl() + "?c=" + b64e({ u: e.url, t: e.title, m: e.min || 0, up: e.up || "" });
+
+function route() {
+  if (S.startedAt) return;                       // never switch away from a running exam
+  const pro = location.hash === "#proctor";
+  $("vProctor").classList.toggle("on", pro);
+  $("vSetup").classList.toggle("on", !pro);
+  if (pro) renderExams();
+}
+window.addEventListener("hashchange", route);
+$("lnkStudent").addEventListener("click", e => { e.preventDefault(); history.replaceState(null, "", baseUrl()); route(); });
+
+function renderExams() {
+  const ul = $("examList"); ul.innerHTML = "";
+  if (!exams.length) { ul.innerHTML = '<li class="empty">No exams yet. Add one above.</li>'; return; }
+  exams.forEach(e => {
+    const li = document.createElement("li");
+    const t = document.createElement("div"); t.className = "t"; t.textContent = e.title + (e.min ? "  ·  " + e.min + " min" : "");
+    const u = document.createElement("div"); u.className = "u"; u.textContent = e.url;
+    const a = document.createElement("div"); a.className = "acts";
+    const mk = (label, fn, cls) => { const b = document.createElement("button"); b.textContent = label; if (cls) b.className = cls; b.onclick = fn; a.append(b); return b; };
+    const copyBtn = mk("Copy student link", async () => {
+      const link = studentLink(e);
+      try { await navigator.clipboard.writeText(link); copyBtn.textContent = "Copied"; setTimeout(() => copyBtn.textContent = "Copy student link", 1500); }
+      catch (_) { window.prompt("Copy this student link:", link); }
+    }, "primary");
+    mk("Test as student", () => window.open(studentLink(e), "_blank", "noopener"));
+    mk("Edit", () => {
+      editId = e.id; $("pfHead").textContent = "Edit exam";
+      $("pfTitle").value = e.title; $("pfUrl").value = e.url; $("pfMin").value = e.min || ""; $("pfUp").value = e.up || "";
+      $("pfCancel").hidden = false; $("pfSave").textContent = "Update exam"; $("pfTitle").focus(); window.scrollTo(0, 0);
+    });
+    mk("Delete", () => { if (confirm('Delete "' + e.title + '"? Links you already sent will keep working.')) { exams = exams.filter(x => x.id !== e.id); saveExams(); renderExams(); } }, "danger");
+    li.append(t, u, a); ul.append(li);
+  });
+}
+
+function resetForm() {
+  editId = null; $("pfHead").textContent = "Add an exam"; $("pfSave").textContent = "Save exam"; $("pfCancel").hidden = true;
+  ["pfTitle", "pfUrl", "pfMin"].forEach(id => $(id).value = "");   // upload address stays filled for the next exam
+}
+$("pfCancel").addEventListener("click", () => { resetForm(); $("pfErr").textContent = ""; });
+$("pfSave").addEventListener("click", () => {
+  const title = $("pfTitle").value.trim(), up = $("pfUp").value.trim();
+  let url = $("pfUrl").value.trim();
+  const min = parseInt($("pfMin").value, 10) || 0;
+  const err = $("pfErr"); err.textContent = "";
+  if (!title) { err.textContent = "Enter an exam title."; $("pfTitle").focus(); return; }
+  if (!/^https?:\/\//i.test(url)) { err.textContent = "The exam link must start with http:// or https://"; $("pfUrl").focus(); return; }
+  if (/^(forms\.gle|goo\.gl)$/i.test(new URL(url).hostname)) {
+    err.textContent = "Short links like forms.gle cannot load inside the exam page. Open the link in your browser and copy the full address that starts with docs.google.com/forms.";
+    $("pfUrl").focus(); return;
+  }
+  url = normalizeExamUrl(url);
+  if (up && !/^https?:\/\//i.test(up)) { err.textContent = "The upload address must start with http:// or https://"; return; }
+  if (editId) { const e = exams.find(x => x.id === editId); Object.assign(e, { title, url, min, up }); }
+  else exams.unshift({ id: "ex" + Date.now().toString(36), title, url, min, up });
+  saveExams(); resetForm(); renderExams();
+});
+if (exams[0] && exams[0].up) $("pfUp").value = exams[0].up;     // reuse the last Drive address for new exams
+route();
+</script>
+</body>
+</html>
