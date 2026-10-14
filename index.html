@@ -115,6 +115,12 @@ code{background:var(--bg);padding:0 .3rem;border-radius:4px}
 .banner.on{display:block}
 .noframe{height:100%;display:grid;place-items:center;text-align:center;padding:2rem;color:var(--mute)}
 
+.endprompt{position:absolute;inset:0;z-index:6;background:rgba(10,16,20,.6);display:none;place-items:center;padding:1rem}
+.endprompt.on{display:grid}
+.epcard{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:1.25rem 1.4rem;max-width:420px}
+.epcard h2{font-size:1.15rem;margin-bottom:.5rem}
+.epcard p{margin:0 0 1rem}
+
 /* review */
 .review{max-width:1100px;margin:0 auto;padding:2rem 1.25rem 4rem}
 .review h1{font-size:1.7rem;margin-bottom:.3rem}
@@ -162,6 +168,10 @@ td.sev-warn{color:var(--warn)} td.sev-high{color:var(--bad);font-weight:600}
       <label class="consent" for="pfPhone">
         <input id="pfPhone" type="checkbox" checked>
         <span>Allow phones and tablets. They record camera and microphone only, because phone browsers cannot record the screen. Untick this to require a laptop or desktop.</span>
+      </label>
+      <label class="consent" for="pfAuto">
+        <input id="pfAuto" type="checkbox" checked>
+        <span>End the exam automatically after the student submits the form. Works best with one-page forms; test yours first. The student gets 20 seconds to cancel.</span>
       </label>
       <div class="btnrow">
         <button id="pfSave" class="primary">Save exam</button>
@@ -238,6 +248,16 @@ td.sev-warn{color:var(--warn)} td.sev-high{color:var(--bad);font-weight:600}
   <div class="exam">
     <div class="stage">
       <div id="banner" class="banner" role="alert"></div>
+      <div id="endPrompt" class="endprompt" role="alertdialog" aria-labelledby="epTitle">
+        <div class="epcard">
+          <h2 id="epTitle">It looks like you submitted the form</h2>
+          <p>Your exam will end and recording will stop in <b id="epSecs">20</b> seconds.</p>
+          <div class="btnrow">
+            <button id="epEnd" class="primary">End exam now</button>
+            <button id="epKeep">I have not submitted yet</button>
+          </div>
+        </div>
+      </div>
       <div id="frameHost" style="position:absolute;inset:0"></div>
     </div>
     <aside class="side" aria-label="Proctoring status">
@@ -524,6 +544,7 @@ function beginSession() {
   if (url) {
     const f = document.createElement("iframe");
     f.id = "examFrame"; f.src = normalizeExamUrl(url); f.title = "Exam";
+    f.addEventListener("load", noteFrameLoad);
     host.append(f);
   } else {
     host.innerHTML = '<div class="noframe"><div><h2>Test mode</h2><p>No exam link was entered. Switch tabs, resize the window, speak or move to see flags appear.</p></div></div>';
@@ -715,6 +736,30 @@ function stopStreams() {
   [S.camStream, S.scrStream, S.voiceStream].forEach(s => s && s.getTracks().forEach(t => t.stop()));
 }
 
+// Google Forms cannot tell this page when it is submitted, but the form frame loads a new page after a submit.
+// The first load is the form itself, so a later load usually means "submitted". We ask before ending.
+let frameLoads = 0, endTick = null;
+function noteFrameLoad() {
+  frameLoads++;
+  if (frameLoads >= 2 && EXAM.ae === 1 && !S.finished && !endTick) submittedPrompt();
+}
+function submittedPrompt() {
+  log("submitted", "The exam form seems to have been submitted", "info");
+  let left = 20;
+  $("epSecs").textContent = left;
+  $("endPrompt").classList.add("on");
+  $("epEnd").focus();
+  endTick = setInterval(() => {
+    left--; $("epSecs").textContent = Math.max(left, 0);
+    if (left <= 0) endPromptEnd();
+  }, 1000);
+  S.timers.push(endTick);
+}
+function endPromptClose() { clearInterval(endTick); endTick = null; $("endPrompt").classList.remove("on"); }
+function endPromptEnd() { endPromptClose(); finishExam(true, "Form submitted; session ended automatically"); }
+$("epEnd").addEventListener("click", endPromptEnd);
+$("epKeep").addEventListener("click", () => { endPromptClose(); log("submitted-no", "Student said the form was not submitted yet", "warn"); });
+
 function startTimer(min) {
   const end = Date.now() + min * 60000;
   $("pTime").hidden = false;
@@ -727,12 +772,12 @@ function startTimer(min) {
 
 $("btnFinish").addEventListener("click", () => finishExam(false));
 
-async function finishExam(auto) {
+async function finishExam(auto, why) {
   if (S.finished) return;
   if (!auto && !confirm("Finish the exam and stop recording? This cannot be undone.")) return;
   S.finished = true; S.endedAt = Date.now();
   S.timers.forEach(t => { clearInterval(t); clearTimeout(t); });
-  log("end", auto ? "Time limit reached; session ended automatically" : "Session finished by student", "info");
+  log("end", auto ? (why || "Time limit reached; session ended automatically") : "Session finished by student", "info");
   // let each recorder flush its final chunk
   await Promise.all(Object.values(S.rec).map(r => new Promise(res => {
     if (r.state === "inactive") return res();
@@ -810,7 +855,7 @@ let exams = [], editId = null;
 try { exams = JSON.parse(localStorage.getItem(LS_KEY) || "[]"); } catch (_) { exams = []; }
 const saveExams = () => { try { localStorage.setItem(LS_KEY, JSON.stringify(exams)); } catch (_) { $("pfErr").textContent = "This browser would not save the list. Copy your links before closing."; } };
 const baseUrl = () => location.href.split(/[?#]/)[0];
-const studentLink = e => baseUrl() + "?c=" + b64e({ u: e.url, t: e.title, m: e.min || 0, up: e.up || "", ph: e.ph === false ? 0 : 1 });
+const studentLink = e => baseUrl() + "?c=" + b64e({ u: e.url, t: e.title, m: e.min || 0, up: e.up || "", ph: e.ph === false ? 0 : 1, ae: e.ae === false ? 0 : 1 });
 
 function route() {
   if (S.startedAt) return;                       // never switch away from a running exam
@@ -839,7 +884,7 @@ function renderExams() {
     mk("Test as student", () => window.open(studentLink(e), "_blank", "noopener"));
     mk("Edit", () => {
       editId = e.id; $("pfHead").textContent = "Edit exam";
-      $("pfTitle").value = e.title; $("pfUrl").value = e.url; $("pfMin").value = e.min || ""; $("pfUp").value = e.up || ""; $("pfPhone").checked = e.ph !== false;
+      $("pfTitle").value = e.title; $("pfUrl").value = e.url; $("pfMin").value = e.min || ""; $("pfUp").value = e.up || ""; $("pfPhone").checked = e.ph !== false; $("pfAuto").checked = e.ae !== false;
       $("pfCancel").hidden = false; $("pfSave").textContent = "Update exam"; $("pfTitle").focus(); window.scrollTo(0, 0);
     });
     mk("Delete", () => { if (confirm('Delete "' + e.title + '"? Links you already sent will keep working.')) { exams = exams.filter(x => x.id !== e.id); saveExams(); renderExams(); } }, "danger");
@@ -849,7 +894,7 @@ function renderExams() {
 
 function resetForm() {
   editId = null; $("pfHead").textContent = "Add an exam"; $("pfSave").textContent = "Save exam"; $("pfCancel").hidden = true;
-  ["pfTitle", "pfUrl", "pfMin"].forEach(id => $(id).value = ""); $("pfPhone").checked = true;   // upload address stays filled for the next exam
+  ["pfTitle", "pfUrl", "pfMin"].forEach(id => $(id).value = ""); $("pfPhone").checked = true; $("pfAuto").checked = true;   // upload address stays filled for the next exam
 }
 $("pfCancel").addEventListener("click", () => { resetForm(); $("pfErr").textContent = ""; });
 $("pfSave").addEventListener("click", () => {
@@ -865,8 +910,8 @@ $("pfSave").addEventListener("click", () => {
   }
   url = normalizeExamUrl(url);
   if (up && !/^https?:\/\//i.test(up)) { err.textContent = "The upload address must start with http:// or https://"; return; }
-  if (editId) { const e = exams.find(x => x.id === editId); Object.assign(e, { title, url, min, up, ph: $("pfPhone").checked }); }
-  else exams.unshift({ id: "ex" + Date.now().toString(36), title, url, min, up, ph: $("pfPhone").checked });
+  if (editId) { const e = exams.find(x => x.id === editId); Object.assign(e, { title, url, min, up, ph: $("pfPhone").checked, ae: $("pfAuto").checked }); }
+  else exams.unshift({ id: "ex" + Date.now().toString(36), title, url, min, up, ph: $("pfPhone").checked, ae: $("pfAuto").checked });
   saveExams(); resetForm(); renderExams();
 });
 $("pfTest").addEventListener("click", async () => {
