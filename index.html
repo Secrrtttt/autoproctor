@@ -115,6 +115,7 @@ code{background:var(--bg);padding:0 .3rem;border-radius:4px}
 .banner.on{display:block}
 .noframe{height:100%;display:grid;place-items:center;text-align:center;padding:2rem;color:var(--mute)}
 
+select{font:inherit;padding:.5rem .6rem;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
 .endprompt{position:absolute;inset:0;z-index:6;background:rgba(10,16,20,.6);display:none;place-items:center;padding:1rem}
 .endprompt.on{display:grid}
 .epcard{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:1.25rem 1.4rem;max-width:420px}
@@ -173,6 +174,18 @@ td.sev-warn{color:var(--warn)} td.sev-high{color:var(--bad);font-weight:600}
         <input id="pfAuto" type="checkbox" checked>
         <span>End the exam automatically after the student submits the form. Works best with one-page forms; test yours first. The student gets 20 seconds to cancel.</span>
       </label>
+      <label class="consent" for="pfMotion">
+        <input id="pfMotion" type="checkbox" checked>
+        <span>Record only when movement is detected. Video and audio clips and screenshots are saved only while the student moves. This saves a lot of storage but leaves gaps. Leaving the exam tab or window also takes a screenshot. Other flags (voice, split screen, full screen) are logged without a recording.</span>
+      </label>
+      <div class="field">
+        <label for="pfSens">Movement sensitivity</label>
+        <select id="pfSens">
+          <option value="0">Low: large movements only</option>
+          <option value="1" selected>Medium</option>
+          <option value="2">High: small movements</option>
+        </select>
+      </div>
       <div class="btnrow">
         <button id="pfSave" class="primary">Save exam</button>
         <button id="pfCancel" hidden>Cancel edit</button>
@@ -315,7 +328,9 @@ const CFG = {
   voiceHoldMs: 1500,      // speech must last this long to be flagged
   splitRatio: 0.9,        // window smaller than 90% of screen = possible split screen
   cooldownMs: 8000,       // minimum gap between repeated flags of the same type
-  requireFullscreen: true
+  requireFullscreen: true,
+  clipQuietMs: 8000,      // movement-only mode: a clip ends after this long without movement
+  clipMaxMs: 120000       // ...or after this long, then a new clip starts if movement continues
 };
 
 /* ================= STATE ================= */
@@ -327,7 +342,8 @@ const S = {
   camStream: null, scrStream: null, voiceStream: null,
   rec: {}, chunks: { camera: [], screen: [], voice: [] }, seq: { camera: 0, screen: 0, voice: 0 },
   timers: [], lastFlag: {}, prevFrame: null, motionHits: 0, speechSince: 0,
-  audioCtx: null, finished: false, hiddenAt: 0
+  audioCtx: null, finished: false, hiddenAt: 0,
+  clips: [], clipN: 0, clip: null, lastMotionAt: 0, lastClipDone: null
 };
 const camV = $("camPreview");
 const scrV = document.createElement("video");   // hidden, only used to grab screen frames
@@ -365,9 +381,28 @@ function frameOf(video, w = 640) {
   return c.toDataURL("image/jpeg", 0.7);
 }
 
+// A hidden tab may stop updating its <video> element, so screen frames are grabbed straight from the
+// screen-share track when the browser supports it, and from the video element otherwise.
+async function screenFrame(w = 960) {
+  try {
+    const tr = S.scrStream && S.scrStream.getVideoTracks()[0];
+    if (window.ImageCapture && tr && tr.readyState === "live") {
+      const bmp = await new ImageCapture(tr).grabFrame();
+      const c = document.createElement("canvas");
+      c.width = w; c.height = Math.round(w * bmp.height / bmp.width);
+      c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
+      if (bmp.close) bmp.close();
+      return c.toDataURL("image/jpeg", 0.7);
+    }
+  } catch (_) { /* fall back below */ }
+  return frameOf(scrV, w);
+}
+
 function snapshot(reason, sources = ["camera", "screen"]) {
-  sources.forEach(src => {
-    const url = frameOf(src === "camera" ? camV : scrV, src === "screen" ? 960 : 640);
+  // movement-only mode: photos are taken for movement and for leaving the exam tab or window, nothing else
+  if (MOTION_ONLY && !/^(movement|tab hidden|window lost focus)/.test(reason)) return;
+  sources.forEach(async src => {
+    const url = src === "camera" ? frameOf(camV, 640) : await screenFrame(960);
     if (!url) return;
     const snap = { t: rel(), src, reason, url };
     S.snaps.push(snap);
@@ -451,6 +486,17 @@ try {
 if (EXAM.u) { $("examUrl").value = EXAM.u; $("urlField").hidden = true; }
 if (EXAM.t) { $("setupTitle").textContent = EXAM.t; document.title = EXAM.t + " (proctored)"; }
 if (EXAM.up) CFG.uploadUrl = EXAM.up;
+const MOTION_ONLY = EXAM.mo === 1;                       // record only while movement is detected
+if (typeof EXAM.sv === "number" && EXAM.sv >= 0 && EXAM.sv <= 2) CFG.motionThreshold = [0.22, 0.14, 0.08][EXAM.sv];
+if (MOTION_ONLY) {                                       // keep the consent text truthful
+  const items = document.querySelectorAll(".watch-list li");
+  const say = (i, b, t) => { if (!items[i]) return; items[i].querySelector("b").textContent = b; items[i].querySelector("span").textContent = t; };
+  say(0, "Camera and voice", "Video and audio clips are recorded only while movement is detected in the camera view.");
+  say(1, "Screen", "Your entire screen is shared. A screenshot is taken only when movement is detected. Sharing one tab or one window is not accepted.");
+  if (items[2]) items[2].style.display = "none";
+  say(3, "Focus", "Leaving the exam tab or switching to another window takes a screenshot. Exiting full screen or resizing the window is only noted in a log.");
+  say(4, "Movement", "Large movement, no face, or more than one face in view is logged. Movement starts a recording.");
+}
 if (P.get("name")) { $("name").value = P.get("name"); $("nameField").hidden = true; }
 
 function setStep(n) {          // n = the active step (1-3)
@@ -567,8 +613,10 @@ function beginSession() {
     }
   }
   if (EXAM.m > 0) startTimer(EXAM.m);
-  setTimeout(() => snapshot("session start"), 1200);
-  scheduleRandomSnap();
+  if (!MOTION_ONLY) {
+    setTimeout(() => snapshot("session start"), 1200);
+    scheduleRandomSnap();
+  }
 }
 
 /* ================= RECORDERS ================= */
@@ -588,9 +636,11 @@ function startRecorders() {
     r.start(CFG.chunkMs);
     S.rec[key] = r;
   };
-  make("camera", S.camStream, vidMime, { videoBitsPerSecond: CFG.camBps, audioBitsPerSecond: 48000 });     // face video with audio
-  if (S.scrStream) make("screen", S.scrStream, vidMime, { videoBitsPerSecond: CFG.screenBps });     // full-screen recording
-  if (!CFG.uploadUrl) make("voice", S.voiceStream, audMime, { audioBitsPerSecond: 48000 });   // with Drive, the camera file already holds the voice    // audio-only track
+  if (!MOTION_ONLY) {
+    make("camera", S.camStream, vidMime, { videoBitsPerSecond: CFG.camBps, audioBitsPerSecond: 48000 });     // face video with audio
+    if (S.scrStream) make("screen", S.scrStream, vidMime, { videoBitsPerSecond: CFG.screenBps });     // full-screen recording
+    if (!CFG.uploadUrl) make("voice", S.voiceStream, audMime, { audioBitsPerSecond: 48000 });   // with Drive, the camera file already holds the voice    // audio-only track
+  }
 
   if (S.scrStream) S.scrStream.getVideoTracks()[0].addEventListener("ended", () => {
     if (S.finished) return;
@@ -605,6 +655,52 @@ function startRecorders() {
   }));
 }
 
+/* ================= MOVEMENT CLIPS ================= */
+// Movement-only mode: nothing is recorded until movement is seen. Then one camera clip (with sound),
+// one audio clip and screenshots are saved until the movement stops.
+function startClip(score) {
+  const n = ++S.clipN;
+  const vMime = bestMime(["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"]);
+  const aMime = bestMime(["audio/webm;codecs=opus", "audio/webm"]);
+  const clip = { n, startedAt: Date.now(), startT: rel(), vBlob: null, aBlob: null, nextShot: Date.now() + 10000 };
+  const mk = (stream, mime, bps, key) => {
+    const r = new MediaRecorder(stream, { ...(mime ? { mimeType: mime } : {}), ...bps });
+    const parts = [];
+    r.ondataavailable = e => { if (e.data.size) parts.push(e.data); };
+    const stopped = new Promise(res => { r.onstop = () => { finishClipPart(clip, key, new Blob(parts, { type: r.mimeType || mime || "" })); res(); }; });
+    r.start();
+    return { r, stopped };
+  };
+  const v = mk(S.camStream, vMime, { videoBitsPerSecond: CFG.camBps, audioBitsPerSecond: 48000 }, "v");
+  const a = mk(S.voiceStream, aMime, { audioBitsPerSecond: 48000 }, "a");
+  clip.recs = [v.r, a.r];
+  clip.done = Promise.all([v.stopped, a.stopped]);
+  S.clip = clip; S.clips.push(clip); S.lastClipDone = clip.done;
+  log("movement", "Movement detected (" + Math.round(score * 100) + "% of frame changed). Recording clip " + n, "warn");
+  snapshot("movement", ["camera", "screen"]);
+}
+
+function tickClip() {
+  const c = S.clip, now = Date.now();
+  if (!c) return;
+  if (now >= c.nextShot) { snapshot("movement (ongoing)", ["camera", "screen"]); c.nextShot = now + 10000; }
+  if (now - S.lastMotionAt > CFG.clipQuietMs || now - c.startedAt > CFG.clipMaxMs) endClip();
+}
+
+function endClip() {
+  const c = S.clip;
+  if (!c) return;
+  S.clip = null;
+  c.dur = Date.now() - c.startedAt;
+  c.recs.forEach(r => { if (r.state !== "inactive") r.stop(); });
+}
+
+function finishClipPart(c, key, blob) {
+  const kind = key === "v" ? "video_clip" : "audio_clip";
+  if (!CFG.uploadUrl) { c[key + "Blob"] = blob; return; }                         // no Drive: keep for download
+  upload(kind, blob, { seq: c.n, t: c.startT }).then(ok => { if (!ok) c[key + "Blob"] = blob; });   // keep only what failed to send
+}
+
 /* ================= WATCHERS ================= */
 function startWatchers() {
   // --- focus / tab switching ---
@@ -614,7 +710,8 @@ function startWatchers() {
       S.hiddenAt = Date.now();
       setPill("pFocus", "bad", "Left tab");
       log("tab-hidden", "Exam tab was hidden (switched tab or minimized)", "high", { cooldown: false });
-      snapshot("tab hidden", ["screen", "camera"]);   // screen frame shows what is open on the monitor
+      snapshot("tab hidden", ["screen", "camera"]);
+      setTimeout(() => { if (document.hidden && !S.finished) snapshot("tab hidden (+1.5s)", ["screen"]); }, 1500);   // shows what was opened   // screen frame shows what is open on the monitor
     } else {
       const secs = Math.round((Date.now() - S.hiddenAt) / 1000);
       setPill("pFocus", "ok", "In exam");
@@ -678,8 +775,13 @@ function startWatchers() {
       let diff = 0; for (let i = 0; i < g.length; i++) if (Math.abs(g[i] - S.prevFrame[i]) > 28) diff++;
       const score = diff / g.length;
       S.motionHits = score > CFG.motionThreshold ? S.motionHits + 1 : 0;
-      if (S.motionHits >= 2 && log("movement", "Large movement in camera view (" + Math.round(score * 100) + "% of frame changed)", "warn", { cooldown: true }))
-        snapshot("movement", ["camera"]);
+      if (score > CFG.motionThreshold) S.lastMotionAt = Date.now();
+      if (S.motionHits >= 2) {
+        if (MOTION_ONLY) { if (!S.clip) startClip(score); }
+        else if (log("movement", "Large movement in camera view (" + Math.round(score * 100) + "% of frame changed)", "warn", { cooldown: true }))
+          snapshot("movement", ["camera"]);
+      }
+      if (MOTION_ONLY && S.clip) tickClip();
     }
     S.prevFrame = g;
   }, CFG.motionSampleMs));
@@ -777,6 +879,8 @@ async function finishExam(auto, why) {
   if (!auto && !confirm("Finish the exam and stop recording? This cannot be undone.")) return;
   S.finished = true; S.endedAt = Date.now();
   S.timers.forEach(t => { clearInterval(t); clearTimeout(t); });
+  endClip();
+  if (S.lastClipDone) await S.lastClipDone;
   log("end", auto ? (why || "Time limit reached; session ended automatically") : "Session finished by student", "info");
   // let each recorder flush its final chunk
   await Promise.all(Object.values(S.rec).map(r => new Promise(res => {
@@ -807,14 +911,15 @@ function showReview() {
     ["Tab or window leaves", count(["tab-hidden", "window-blur"])],
     ["Split-screen or resize", count(["split-screen", "fullscreen-exit"])],
     ["Movement or face flags", count(["movement", "no-face", "multi-face"])],
-    ["Photos taken", S.snaps.length]
+    ["Photos taken", S.snaps.length],
+    ["Movement clips", S.clips.length]
   ];
   $("rvStats").innerHTML = stats.map(([l, n]) => '<div class="stat"><b>' + n + "</b>" + l + "</div>").join("");
 
   const dl = $("rvDownloads"); dl.innerHTML = "";
   document.querySelectorAll(".sendnote").forEach(n => n.remove());
   if (CFG.uploadUrl) {
-    const failed = ["camera", "screen", "voice"].some(k => S.chunks[k].length);
+    const failed = ["camera", "screen", "voice"].some(k => S.chunks[k].length) || S.clips.some(c => c.vBlob || c.aBlob);
     const n = document.createElement("p"); n.className = "sendnote";
     n.textContent = failed ? "Some recordings could not be sent. Download the files below and give them to your proctor."
                            : "Your recordings were sent to your proctor. You can close this page.";
@@ -828,6 +933,11 @@ function showReview() {
   const ve = /mp4/.test(vt) ? "mp4" : "webm";
   const at = ((S.rec.voice && S.rec.voice.mimeType) || "audio/webm").split(";")[0];
   const ae = /mp4/.test(at) ? "m4a" : "webm";
+  const ext = b => /mp4/.test(b.type) ? "mp4" : "webm";
+  S.clips.forEach(c => {
+    if (c.vBlob) addLink("Clip " + c.n + " video", c.vBlob, safe + "_clip" + c.n + "_video." + ext(c.vBlob));
+    if (c.aBlob) addLink("Clip " + c.n + " audio", c.aBlob, safe + "_clip" + c.n + "_audio." + ext(c.aBlob));
+  });
   if (S.chunks.camera.length) addLink("Camera video (." + ve + ")", new Blob(S.chunks.camera, { type: vt }), safe + "_camera." + ve);
   if (S.chunks.screen.length) addLink("Screen recording (." + ve + ")", new Blob(S.chunks.screen, { type: vt }), safe + "_screen." + ve);
   if (S.chunks.voice.length) addLink("Voice recording (." + ae + ")", new Blob(S.chunks.voice, { type: at }), safe + "_voice." + ae);
@@ -855,7 +965,7 @@ let exams = [], editId = null;
 try { exams = JSON.parse(localStorage.getItem(LS_KEY) || "[]"); } catch (_) { exams = []; }
 const saveExams = () => { try { localStorage.setItem(LS_KEY, JSON.stringify(exams)); } catch (_) { $("pfErr").textContent = "This browser would not save the list. Copy your links before closing."; } };
 const baseUrl = () => location.href.split(/[?#]/)[0];
-const studentLink = e => baseUrl() + "?c=" + b64e({ u: e.url, t: e.title, m: e.min || 0, up: e.up || "", ph: e.ph === false ? 0 : 1, ae: e.ae === false ? 0 : 1 });
+const studentLink = e => baseUrl() + "?c=" + b64e({ u: e.url, t: e.title, m: e.min || 0, up: e.up || "", ph: e.ph === false ? 0 : 1, ae: e.ae === false ? 0 : 1, mo: e.mo === false ? 0 : 1, sv: typeof e.sv === "number" ? e.sv : 1 });
 
 function route() {
   if (S.startedAt) return;                       // never switch away from a running exam
@@ -884,7 +994,7 @@ function renderExams() {
     mk("Test as student", () => window.open(studentLink(e), "_blank", "noopener"));
     mk("Edit", () => {
       editId = e.id; $("pfHead").textContent = "Edit exam";
-      $("pfTitle").value = e.title; $("pfUrl").value = e.url; $("pfMin").value = e.min || ""; $("pfUp").value = e.up || ""; $("pfPhone").checked = e.ph !== false; $("pfAuto").checked = e.ae !== false;
+      $("pfTitle").value = e.title; $("pfUrl").value = e.url; $("pfMin").value = e.min || ""; $("pfUp").value = e.up || ""; $("pfPhone").checked = e.ph !== false; $("pfAuto").checked = e.ae !== false; $("pfMotion").checked = e.mo !== false; $("pfSens").value = String(typeof e.sv === "number" ? e.sv : 1);
       $("pfCancel").hidden = false; $("pfSave").textContent = "Update exam"; $("pfTitle").focus(); window.scrollTo(0, 0);
     });
     mk("Delete", () => { if (confirm('Delete "' + e.title + '"? Links you already sent will keep working.')) { exams = exams.filter(x => x.id !== e.id); saveExams(); renderExams(); } }, "danger");
@@ -894,7 +1004,7 @@ function renderExams() {
 
 function resetForm() {
   editId = null; $("pfHead").textContent = "Add an exam"; $("pfSave").textContent = "Save exam"; $("pfCancel").hidden = true;
-  ["pfTitle", "pfUrl", "pfMin"].forEach(id => $(id).value = ""); $("pfPhone").checked = true; $("pfAuto").checked = true;   // upload address stays filled for the next exam
+  ["pfTitle", "pfUrl", "pfMin"].forEach(id => $(id).value = ""); $("pfPhone").checked = true; $("pfAuto").checked = true; $("pfMotion").checked = true; $("pfSens").value = "1";   // upload address stays filled for the next exam
 }
 $("pfCancel").addEventListener("click", () => { resetForm(); $("pfErr").textContent = ""; });
 $("pfSave").addEventListener("click", () => {
@@ -910,8 +1020,8 @@ $("pfSave").addEventListener("click", () => {
   }
   url = normalizeExamUrl(url);
   if (up && !/^https?:\/\//i.test(up)) { err.textContent = "The upload address must start with http:// or https://"; return; }
-  if (editId) { const e = exams.find(x => x.id === editId); Object.assign(e, { title, url, min, up, ph: $("pfPhone").checked, ae: $("pfAuto").checked }); }
-  else exams.unshift({ id: "ex" + Date.now().toString(36), title, url, min, up, ph: $("pfPhone").checked, ae: $("pfAuto").checked });
+  if (editId) { const e = exams.find(x => x.id === editId); Object.assign(e, { title, url, min, up, ph: $("pfPhone").checked, ae: $("pfAuto").checked, mo: $("pfMotion").checked, sv: parseInt($("pfSens").value, 10) }); }
+  else exams.unshift({ id: "ex" + Date.now().toString(36), title, url, min, up, ph: $("pfPhone").checked, ae: $("pfAuto").checked, mo: $("pfMotion").checked, sv: parseInt($("pfSens").value, 10) });
   saveExams(); resetForm(); renderExams();
 });
 $("pfTest").addEventListener("click", async () => {
