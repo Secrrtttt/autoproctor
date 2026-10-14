@@ -79,8 +79,15 @@ code{background:var(--bg);padding:0 .3rem;border-radius:4px}
 .empty{color:var(--mute);padding:1rem;border:1px dashed var(--line);border-radius:8px}
 
 /* exam */
-.exam{display:grid;grid-template-columns:minmax(0,1fr) 320px;height:100vh}
-@media (max-width:900px){.exam{grid-template-columns:1fr;grid-template-rows:1fr auto;height:100vh}}
+.exam{display:grid;grid-template-columns:minmax(0,1fr) 320px;height:100vh;height:100dvh}
+@media (max-width:900px){
+  .exam{grid-template-columns:1fr;grid-template-rows:minmax(0,1fr) auto}
+  .side{border-left:0;border-top:1px solid var(--line);flex-direction:row;flex-wrap:wrap;align-items:flex-start;gap:.5rem;padding:.5rem;max-height:40vh}
+  .preview{width:84px;flex:none}
+  .status{flex:1;min-width:160px}
+  .log{flex-basis:100%;min-height:48px;max-height:70px}
+  #btnFinish{flex:1 1 100%}
+}
 .stage{position:relative;background:var(--panel);min-width:0}
 .stage iframe{position:absolute;inset:0;width:100%;height:100%;border:0;background:#fff}
 .side{background:var(--panel);border-left:1px solid var(--line);display:flex;flex-direction:column;
@@ -148,8 +155,14 @@ td.sev-warn{color:var(--warn)} td.sev-high{color:var(--bad);font-weight:600}
         <div class="field"><label for="pfMin">Time limit in minutes (optional)</label>
           <input id="pfMin" type="text" inputmode="numeric" placeholder="e.g. 60"></div>
         <div class="field"><label for="pfUp">Google Drive upload address (optional)</label>
-          <input id="pfUp" type="url" placeholder="https://script.google.com/macros/s/…/exec"></div>
+          <input id="pfUp" type="url" placeholder="https://script.google.com/macros/s/…/exec">
+          <div class="btnrow" style="margin-top:.5rem"><button id="pfTest" type="button">Test connection</button></div>
+          <p id="pfTestOut" class="hint" role="status"></p></div>
       </div>
+      <label class="consent" for="pfPhone">
+        <input id="pfPhone" type="checkbox" checked>
+        <span>Allow phones and tablets. They record camera and microphone only, because phone browsers cannot record the screen. Untick this to require a laptop or desktop.</span>
+      </label>
       <div class="btnrow">
         <button id="pfSave" class="primary">Save exam</button>
         <button id="pfCancel" hidden>Cancel edit</button>
@@ -237,6 +250,7 @@ td.sev-warn{color:var(--warn)} td.sev-high{color:var(--bad);font-weight:600}
         <div class="pill" id="pScr" data-s="wait"><span>Screen</span><span>–</span></div>
         <div class="pill" id="pMic" data-s="wait"><span>Voice</span><span>–</span></div>
         <div class="pill" id="pFocus" data-s="wait"><span>Focus</span><span>–</span></div>
+        <div class="pill" id="pDrive" data-s="wait" hidden><span>Drive</span><span>–</span></div>
         <div class="pill" id="pTime" data-s="ok" hidden><span>Time left</span><span>–</span></div>
       </div>
       <ul id="liveLog" class="log" aria-live="polite"></ul>
@@ -358,27 +372,36 @@ const blobToB64 = blob => new Promise((res, rej) => {
 
 // Sends one piece (video chunk, photo or event log) to the Google Drive receiver. Resolves true/false.
 async function sendToDrive(kind, blob, meta) {
+  let lastErr = "unknown error";
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const body = { sessionId: S.id, student: S.name, exam: EXAM.t || "Exam", kind, meta, mime: blob.type };
+      const body = { sessionId: S.id, student: S.name, exam: EXAM.t || "Exam", kind, meta, mime: (blob.type || "").split(";")[0] };
       if (kind === "events") body.text = await blob.text(); else body.data = await blobToB64(blob);
       // A plain string body is sent as text/plain, which Apps Script accepts without a CORS preflight.
       const r = await fetch(CFG.uploadUrl, { method: "POST", body: JSON.stringify(body) });
-      const j = await r.json();
+      const txt = await r.text();
+      let j; try { j = JSON.parse(txt); } catch (_) { throw new Error("Google sent a web page, not data. Set the deployment access to Anyone"); }
       if (j.ok) return true;
       throw new Error(j.error || "refused");
     } catch (e) {
-      if (attempt === 2) { log("upload", "Could not send a " + kind + " file to Drive (" + e.message + ")", "warn", { cooldown: true }); return false; }
-      await sleep(2000 * (attempt + 1));
+      lastErr = e instanceof TypeError ? "cannot reach the upload address" : e.message;
+      if (attempt < 2) await sleep(2000 * (attempt + 1));
     }
   }
+  log("upload", "Could not send a " + kind + " file to Drive: " + lastErr, "warn", { cooldown: true });
   return false;
+}
+
+function driveCount(ok) {
+  S.sent = (S.sent || 0) + (ok ? 1 : 0); S.failed = (S.failed || 0) + (ok ? 0 : 1);
+  if (!$("pDrive").hidden) setPill("pDrive", S.failed ? "bad" : "ok", S.failed ? S.failed + " failed" : S.sent + " sent");
 }
 
 function upload(kind, blob, meta = {}) {
   if (!CFG.uploadUrl) return Promise.resolve(true);
   const p = sendToDrive(kind, blob, meta);
   (S.pending ||= new Set()).add(p);
+  p.then(driveCount);
   p.finally(() => S.pending.delete(p));
   return p;
 }
@@ -416,9 +439,22 @@ function setStep(n) {          // n = the active step (1-3)
     $("btn" + i).disabled = i !== n;
   });
   $("btn1").textContent = n > 1 ? "Allowed" : "I agree and allow";
-  $("btn2").textContent = n > 2 ? "Shared" : "Share screen";
+  $("btn2").textContent = n > 2 ? (NO_SCREEN ? "Skipped" : "Shared") : (NO_SCREEN ? "Continue" : "Share screen");
 }
 const showErr = m => { $("setupError").textContent = m || ""; };
+
+// Phone and tablet browsers cannot record the screen. Detect that by feature, not by device name.
+const NO_SCREEN = !(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
+if (NO_SCREEN) {
+  CFG.requireFullscreen = false;
+  const st2 = $("st2");
+  st2.querySelector("b").textContent = "Screen sharing is not available on this device";
+  st2.querySelector(".hint").textContent = "Phones cannot share the screen, so this exam records your camera and microphone only.";
+  if (EXAM.ph === 0) {
+    showErr("This exam needs a laptop or desktop computer. Open the link on one.");
+    $("btn1").disabled = true;
+  }
+}
 
 $("btn1").addEventListener("click", async () => {
   showErr("");
@@ -443,6 +479,7 @@ $("btn1").addEventListener("click", async () => {
 
 $("btn2").addEventListener("click", async () => {
   showErr("");
+  if (NO_SCREEN) { S.scrStream = null; setStep(3); return; }
   try {
     S.scrStream = await navigator.mediaDevices.getDisplayMedia({
       video: { displaySurface: "monitor", frameRate: { ideal: 6, max: 10 } }, audio: false, selfBrowserSurface: "exclude"
@@ -468,7 +505,7 @@ $("btn2").addEventListener("click", async () => {
 
 $("btn3").addEventListener("click", async () => {
   showErr("");
-  if (!S.scrStream || !S.scrStream.active || !S.camStream || !S.camStream.active) { setStep(S.camStream && S.camStream.active ? 2 : 1); showErr("A permission was lost. Please allow it again."); return; }
+  if ((!NO_SCREEN && (!S.scrStream || !S.scrStream.active)) || !S.camStream || !S.camStream.active) { setStep(S.camStream && S.camStream.active ? 2 : 1); showErr("A permission was lost. Please allow it again."); return; }
   if (CFG.requireFullscreen && document.documentElement.requestFullscreen) {
     try { await document.documentElement.requestFullscreen(); } catch (_) { /* logged during the exam */ }
   }
@@ -478,8 +515,8 @@ $("btn3").addEventListener("click", async () => {
 function beginSession() {
   S.startedAt = Date.now();
   $("vSetup").classList.remove("on"); $("vExam").classList.add("on");
-  camV.srcObject = S.camStream; scrV.srcObject = S.scrStream;
-  camV.play(); scrV.play();
+  camV.srcObject = S.camStream; camV.play();
+  if (S.scrStream) { scrV.srcObject = S.scrStream; scrV.play(); }
 
   // exam content
   const url = $("examUrl").value.trim();
@@ -497,8 +534,17 @@ function beginSession() {
   if (CFG.uploadUrl) S.timers.push(setInterval(() => {
     if (!S.finished) upload("events", new Blob([JSON.stringify({ id: S.id, student: S.name, events: S.events })], { type: "application/json" }));
   }, 60000));
-  setPill("pCam", "ok", "On"); setPill("pScr", "ok", "On"); setPill("pMic", "ok", "Quiet"); setPill("pFocus", "ok", "In exam");
+  setPill("pCam", "ok", "On"); setPill("pScr", NO_SCREEN ? "wait" : "ok", NO_SCREEN ? "Phone: off" : "On");
+  if (CFG.uploadUrl) { $("pDrive").hidden = false; setPill("pDrive", "wait", "Ready"); } setPill("pMic", "ok", "Quiet"); setPill("pFocus", "ok", "In exam");
   log("start", "Session started for " + S.name + (EXAM.t ? " · " + EXAM.t : ""), "info");
+  if (NO_SCREEN) {
+    log("phone-mode", "Phone or tablet mode: no screen recording, full screen or split-screen checks on this device", "warn");
+    if (navigator.wakeLock) {                       // keep the phone screen awake so recording does not pause
+      const keepAwake = () => navigator.wakeLock.request("screen").catch(() => {});
+      keepAwake();
+      document.addEventListener("visibilitychange", () => { if (!document.hidden && !S.finished) keepAwake(); });
+    }
+  }
   if (EXAM.m > 0) startTimer(EXAM.m);
   setTimeout(() => snapshot("session start"), 1200);
   scheduleRandomSnap();
@@ -522,10 +568,10 @@ function startRecorders() {
     S.rec[key] = r;
   };
   make("camera", S.camStream, vidMime, { videoBitsPerSecond: CFG.camBps, audioBitsPerSecond: 48000 });     // face video with audio
-  make("screen", S.scrStream, vidMime, { videoBitsPerSecond: CFG.screenBps });     // full-screen recording
+  if (S.scrStream) make("screen", S.scrStream, vidMime, { videoBitsPerSecond: CFG.screenBps });     // full-screen recording
   if (!CFG.uploadUrl) make("voice", S.voiceStream, audMime, { audioBitsPerSecond: 48000 });   // with Drive, the camera file already holds the voice    // audio-only track
 
-  S.scrStream.getVideoTracks()[0].addEventListener("ended", () => {
+  if (S.scrStream) S.scrStream.getVideoTracks()[0].addEventListener("ended", () => {
     if (S.finished) return;
     setPill("pScr", "bad", "Stopped");
     banner("Screen sharing stopped. Share your entire screen again or tell your proctor.");
@@ -578,7 +624,7 @@ function startWatchers() {
     } else { banner(""); }
   });
   const checkSplit = () => {
-    if (S.finished) return;
+    if (S.finished || NO_SCREEN) return;            // a phone's keyboard and rotation would cause false flags
     const wr = window.innerWidth / screen.width, hr = window.innerHeight / screen.height;
     if (wr < CFG.splitRatio || hr < CFG.splitRatio) {
       if (log("split-screen", "Exam window covers only " + Math.round(wr * 100) + "% x " + Math.round(hr * 100) + "% of the screen (possible split screen)", "high", { cooldown: true }))
@@ -637,6 +683,7 @@ function startWatchers() {
   // --- voice ---
   const AC = window.AudioContext || window.webkitAudioContext;
   S.audioCtx = new AC();
+  if (S.audioCtx.resume) S.audioCtx.resume();
   const src = S.audioCtx.createMediaStreamSource(S.voiceStream);
   const an = S.audioCtx.createAnalyser(); an.fftSize = 1024; src.connect(an);
   const buf = new Float32Array(an.fftSize);
@@ -732,9 +779,13 @@ function showReview() {
     const a = document.createElement("a"); a.textContent = label; a.href = URL.createObjectURL(blob); a.download = file; dl.append(a);
   };
   const safe = S.name.replace(/\W+/g, "_") || "student";
-  if (S.chunks.camera.length) addLink("Camera video (.webm)", new Blob(S.chunks.camera, { type: "video/webm" }), safe + "_camera.webm");
-  if (S.chunks.screen.length) addLink("Screen recording (.webm)", new Blob(S.chunks.screen, { type: "video/webm" }), safe + "_screen.webm");
-  if (S.chunks.voice.length) addLink("Voice recording (.webm)", new Blob(S.chunks.voice, { type: "audio/webm" }), safe + "_voice.webm");
+  const vt = ((S.rec.camera && S.rec.camera.mimeType) || "video/webm").split(";")[0];
+  const ve = /mp4/.test(vt) ? "mp4" : "webm";
+  const at = ((S.rec.voice && S.rec.voice.mimeType) || "audio/webm").split(";")[0];
+  const ae = /mp4/.test(at) ? "m4a" : "webm";
+  if (S.chunks.camera.length) addLink("Camera video (." + ve + ")", new Blob(S.chunks.camera, { type: vt }), safe + "_camera." + ve);
+  if (S.chunks.screen.length) addLink("Screen recording (." + ve + ")", new Blob(S.chunks.screen, { type: vt }), safe + "_screen." + ve);
+  if (S.chunks.voice.length) addLink("Voice recording (." + ae + ")", new Blob(S.chunks.voice, { type: at }), safe + "_voice." + ae);
   addLink("Event log (.json)", new Blob([JSON.stringify({ id: S.id, student: S.name, events: S.events }, null, 2)], { type: "application/json" }), safe + "_events.json");
 
   const tb = $("rvEvents"); tb.innerHTML = "";
@@ -759,7 +810,7 @@ let exams = [], editId = null;
 try { exams = JSON.parse(localStorage.getItem(LS_KEY) || "[]"); } catch (_) { exams = []; }
 const saveExams = () => { try { localStorage.setItem(LS_KEY, JSON.stringify(exams)); } catch (_) { $("pfErr").textContent = "This browser would not save the list. Copy your links before closing."; } };
 const baseUrl = () => location.href.split(/[?#]/)[0];
-const studentLink = e => baseUrl() + "?c=" + b64e({ u: e.url, t: e.title, m: e.min || 0, up: e.up || "" });
+const studentLink = e => baseUrl() + "?c=" + b64e({ u: e.url, t: e.title, m: e.min || 0, up: e.up || "", ph: e.ph === false ? 0 : 1 });
 
 function route() {
   if (S.startedAt) return;                       // never switch away from a running exam
@@ -788,7 +839,7 @@ function renderExams() {
     mk("Test as student", () => window.open(studentLink(e), "_blank", "noopener"));
     mk("Edit", () => {
       editId = e.id; $("pfHead").textContent = "Edit exam";
-      $("pfTitle").value = e.title; $("pfUrl").value = e.url; $("pfMin").value = e.min || ""; $("pfUp").value = e.up || "";
+      $("pfTitle").value = e.title; $("pfUrl").value = e.url; $("pfMin").value = e.min || ""; $("pfUp").value = e.up || ""; $("pfPhone").checked = e.ph !== false;
       $("pfCancel").hidden = false; $("pfSave").textContent = "Update exam"; $("pfTitle").focus(); window.scrollTo(0, 0);
     });
     mk("Delete", () => { if (confirm('Delete "' + e.title + '"? Links you already sent will keep working.')) { exams = exams.filter(x => x.id !== e.id); saveExams(); renderExams(); } }, "danger");
@@ -798,7 +849,7 @@ function renderExams() {
 
 function resetForm() {
   editId = null; $("pfHead").textContent = "Add an exam"; $("pfSave").textContent = "Save exam"; $("pfCancel").hidden = true;
-  ["pfTitle", "pfUrl", "pfMin"].forEach(id => $(id).value = "");   // upload address stays filled for the next exam
+  ["pfTitle", "pfUrl", "pfMin"].forEach(id => $(id).value = ""); $("pfPhone").checked = true;   // upload address stays filled for the next exam
 }
 $("pfCancel").addEventListener("click", () => { resetForm(); $("pfErr").textContent = ""; });
 $("pfSave").addEventListener("click", () => {
@@ -814,9 +865,24 @@ $("pfSave").addEventListener("click", () => {
   }
   url = normalizeExamUrl(url);
   if (up && !/^https?:\/\//i.test(up)) { err.textContent = "The upload address must start with http:// or https://"; return; }
-  if (editId) { const e = exams.find(x => x.id === editId); Object.assign(e, { title, url, min, up }); }
-  else exams.unshift({ id: "ex" + Date.now().toString(36), title, url, min, up });
+  if (editId) { const e = exams.find(x => x.id === editId); Object.assign(e, { title, url, min, up, ph: $("pfPhone").checked }); }
+  else exams.unshift({ id: "ex" + Date.now().toString(36), title, url, min, up, ph: $("pfPhone").checked });
   saveExams(); resetForm(); renderExams();
+});
+$("pfTest").addEventListener("click", async () => {
+  const out = $("pfTestOut"), url = $("pfUp").value.trim();
+  const say = (m, c) => { out.textContent = m; out.style.color = c || "var(--mute)"; };
+  if (!/^https?:\/\//i.test(url)) { say("Paste the Web app address first.", "var(--bad)"); return; }
+  say("Testing…");
+  try {
+    const r = await fetch(url, { method: "POST", body: JSON.stringify({ sessionId: "ping", kind: "ping" }) });
+    let j; try { j = JSON.parse(await r.text()); } catch (_) {
+      say("Google sent back a web page instead of data. In Apps Script open Deploy > Manage deployments, set Who has access to Anyone, and deploy a new version.", "var(--bad)"); return; }
+    if (j.ok && j.pong) say("Connected. The receiver is working.", "var(--ok)");
+    else say("The receiver answered with an error: " + (j.error || "unknown") + ". If you just edited the script, paste the latest version and deploy a new version.", "var(--bad)");
+  } catch (_) {
+    say("Could not reach it. The address must be the full Web app URL ending in /exec.", "var(--bad)");
+  }
 });
 if (exams[0] && exams[0].up) $("pfUp").value = exams[0].up;     // reuse the last Drive address for new exams
 route();
